@@ -1,9 +1,20 @@
-const { Client, GatewayIntentBits, Collection, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActivityType } = require('discord.js');
+const {
+    Client,
+    GatewayIntentBits,
+    Collection,
+    ActionRowBuilder,
+    StringSelectMenuBuilder,
+    EmbedBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ButtonBuilder,
+    ButtonStyle
+} = require('discord.js');
 const { joinVoiceChannel, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
+const fs = require('fs');
+const config = require('./config.json');
 require('dotenv').config();
-const fs = require('fs').promises;
-const path = require('path');
-const config = require('./config.json'); // Adjust the path if necessary
 
 const client = new Client({
     intents: [
@@ -11,39 +22,34 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildVoiceStates, // Needed to manage voice states
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildPresences
     ],
 });
 
-client.commands = new Collection(); // Collection for message-based commands
-client.slashCommands = new Collection(); // Collection for slash commands
+client.commands = new Collection();
+client.slashCommands = new Collection();
 
 const handleCommands = require('./handleCommands');
 handleCommands(client);
 
-const handleModalSubmit  = require('./handlePermission'); // Update this path as needed
-const config_admin = '1178444979153145866';
+const handleModalSubmit = require('./handlePermission');
 
-const voiceChannelId = '1247287989340606496'; // Replace with your channel ID
-const guildId = '1145425767283556532'; // Replace with your guild ID
-
-const BLACKLIST_FILE = path.join(__dirname, 'blacklist.json');
-
-// Function to read the blacklist
-async function getBlacklist() {
-    try {
-        const data = await fs.readFile(BLACKLIST_FILE, 'utf8');
-        const json = JSON.parse(data);
-        return json.blacklisted || [];
-    } catch (err) {
-        if (err.code === 'ENOENT') {
-            return [];
-        } else {
-            console.error('Error reading blacklist:', err);
-            return [];
-        }
-    }
+// Load blacklist from JSON file
+let blacklist = [];
+try {
+    const data = fs.readFileSync('./blacklist.json', 'utf8');
+    blacklist = JSON.parse(data).blacklisted;
+} catch (err) {
+    console.error('Error reading blacklist.json:', err);
 }
+
+function isBlacklisted(userId) {
+    return blacklist.includes(userId);
+}
+
+const voiceChannelId = '1325203506436771910'; // Replace with your channel ID
+const guildId = '1145425767283556532'; // Replace with your guild ID
 
 // Function to join the voice channel automatically
 async function joinVoiceChannelAutomatically() {
@@ -51,7 +57,7 @@ async function joinVoiceChannelAutomatically() {
         const guild = await client.guilds.fetch(guildId);
         const channel = guild.channels.cache.get(voiceChannelId);
 
-        if (!channel || channel.type !== 2) { // Ensure it's a voice channel
+        if (!channel || channel.type !== 2) {
             console.error('Voice channel not found or is not a voice channel.');
             return;
         }
@@ -70,13 +76,12 @@ async function joinVoiceChannelAutomatically() {
         connection.on(VoiceConnectionStatus.Disconnected, async () => {
             try {
                 await Promise.race([
-                    entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-                    entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+                    entersState(connection, VoiceConnectionStatus.Signalling, 5000),
+                    entersState(connection, VoiceConnectionStatus.Connecting, 5000),
                 ]);
-                // Reconnected successfully
-            } catch (error) {
+            } catch {
                 console.log('Reconnecting to the voice channel...');
-                joinVoiceChannelAutomatically(); // Attempt to reconnect
+                joinVoiceChannelAutomatically();
             }
         });
     } catch (error) {
@@ -89,48 +94,31 @@ client.once('ready', async () => {
     await joinVoiceChannelAutomatically();
 
     try {
-        // Fetch the guild by its ID
-        const guild = await client.guilds.fetch('1145425767283556532'); // Replace with your guild ID
-        if (guild) {
-            const memberCount = guild.memberCount;
-            await client.user.setPresence({
-                activities: [
-                    {
-                        name: `Watching over ${memberCount} in Georgia State Roleplay`,
-                        type: ActivityType.Watching
-                    },
-                    {
-                        name: `Watching over ${memberCount} in Georgia State Roleplay`,
-                        type: ActivityType.Custom,
-                        state: `Watching over ${memberCount} in Georgia State Roleplay`
-                    }
-                ],
-                status: 'online',
-            });
-            console.log(`Activity set to "Watching over ${memberCount} in Georgia State Roleplay" with custom status "Managed by godlygucci"`);
-        } else {
-            console.log('Guild not found.');
-        }
+        const guild = await client.guilds.fetch(guildId);
+        const memberCount = guild.memberCount;
+        await client.user.setPresence({
+            activities: [{ name: `Watching over ${memberCount} in Georgia State Roleplay.` }],
+            status: 'online',
+        });
+        console.log(`Presence set: Watching over ${memberCount} members.`);
     } catch (error) {
         console.error('Error fetching guild or setting presence:', error);
     }
 });
 
 client.on('messageCreate', async message => {
-    const prefix = config.prefix; // Ensure prefix is declared in the appropriate scope
+    const prefix = config.prefix;
     if (!message.content.startsWith(prefix) || message.author.bot) return;
-    
-    const blacklist = await getBlacklist();
-    if (blacklist.includes(message.author.id)) {
+
+    if (isBlacklisted(message.author.id)) {
         return message.reply('You are blacklisted from using this bot.')
             .then(sentMessage => setTimeout(() => sentMessage.delete(), 1000));
     }
-    
+
     const args = message.content.slice(prefix.length).trim().split(/ +/);
     const commandName = args.shift().toLowerCase();
 
     const command = client.commands.get(commandName);
-
     if (!command) return;
 
     try {
@@ -142,87 +130,104 @@ client.on('messageCreate', async message => {
 });
 
 client.on('interactionCreate', async interaction => {
+    if (isBlacklisted(interaction.user.id)) {
+        return interaction.reply({ content: 'You are blacklisted from using this bot.', ephemeral: true });
+    }
+
+    if (interaction.isCommand()) {
+        const command = client.slashCommands.get(interaction.commandName);
+        if (!command) return;
+
+        try {
+            await command.execute(interaction);
+        } catch (error) {
+            console.error('Error executing command:', error);
+            await interaction.reply({ content: 'There was an error executing this command!', ephemeral: true });
+        }
+    } else if (interaction.isButton()) {
+        if (interaction.customId === 'ban_appeal') {
+            const modal = new ModalBuilder()
+                .setCustomId('ban_appeal_form')
+                .setTitle('Ban Appeal')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('roblox_username')
+                            .setLabel('YOUR ROBLOX USERNAME')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('Enter your Roblox username here...')
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('ban_reason')
+                            .setLabel('WHY WERE YOU BANNED?')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(true)
+                            .setPlaceholder('Begin Typing Here...')
+                    ),
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('appeal_reason')
+                            .setLabel('WHY SHOULD YOU BE UNBANNED?')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setRequired(true)
+                            .setPlaceholder('Begin Typing Here...')
+                            .setMaxLength(750)
+                    )
+                );
+
+            await interaction.showModal(modal);
+        }
+    } else if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'ban_appeal_form') {
+            const username = interaction.fields.getTextInputValue('roblox_username');
+            const banReason = interaction.fields.getTextInputValue('ban_reason');
+            const appealReason = interaction.fields.getTextInputValue('appeal_reason');
+
+            const appealEmbed = new EmbedBuilder()
+                .setTitle('New Ban Appeal')
+                .setColor('#FFA500')
+                .setAuthor({ name: interaction.user.tag, iconURL: interaction.user.displayAvatarURL() })
+                .addFields(
+                    { name: 'Discord User', value: `<@${interaction.user.id}>` },
+                    { name: 'Roblox Username', value: username },
+                    { name: 'Ban Reason', value: banReason },
+                    { name: 'Appeal Reason', value: appealReason },
+                    { name: 'Status', value: '⏳ Pending Review' }
+                )
+                .setTimestamp()
+                .setFooter({ text: 'Ban Appeal System • Created by GSRP Bot Devs' });
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`accept_appeal_${interaction.user.id}`)
+                    .setLabel('Accept')
+                    .setStyle(ButtonStyle.Success),
+                new ButtonBuilder()
+                    .setCustomId(`deny_appeal_${interaction.user.id}`)
+                    .setLabel('Deny')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+            const appealsChannel = interaction.guild.channels.cache.get(process.env.APPEALS_CHANNEL_ID);
+            if (appealsChannel) {
+                await appealsChannel.send({ embeds: [appealEmbed], components: [row] });
+            }
+
+            await interaction.reply({ content: 'Your appeal has been submitted.', ephemeral: true });
+        }
+    }
+
     try {
-        const blacklist = await getBlacklist();
-
-        // Check if the user is blacklisted for all types of interactions
-        if (blacklist.includes(interaction.user.id)) {
-            return interaction.reply({ content: 'You are blacklisted from using this bot.', ephemeral: true });
-        }
-
-        if (interaction.isChatInputCommand()) {
-            const command = client.slashCommands.get(interaction.commandName);
-
-            if (!command) {
-                console.error('Command not found:', interaction.commandName);
-                return;
-            }
-
-            try {
-                await command.execute(interaction);
-            } catch (error) {
-                console.error('Error executing command:', error);
-                await handleInteractionError(interaction);
-            }
-        } else if (interaction.isButton()) {
-            try {
-                await handleModalSubmit.execute(interaction);
-            } catch (error) {
-                console.error('Error handling button interaction:', error);
-                await handleInteractionError(interaction);
-            }
-        } else if (interaction.isModalSubmit()) {
-            if (interaction.customId === 'change-prefix-modal') {
-                const newPrefix = interaction.fields.getTextInputValue('prefix-input');
-                await handlePrefixChange(interaction, newPrefix);
-            } else {
-                try {
-                    await handleModalSubmit.execute(interaction);
-                } catch (error) {
-                    console.error('Error handling modal interaction:', error);
-                    await handleInteractionError(interaction);
-                }
-            }
-        } else if (interaction.isStringSelectMenu()) {
-            if (!interaction.member.roles.cache.has(config_admin)) {
-                return interaction.reply({ content: 'You do not have the required role to use this menu.', ephemeral: true });
-            }
-            // Handle select menu interaction here
-        } else if (interaction.isContextMenuCommand()) {
-            // Handle context menu commands here
-        }
+        await handleModalSubmit.execute(interaction);
     } catch (error) {
         console.error('Error handling interaction:', error);
-        await handleInteractionError(interaction);
+        await interaction.reply({ content: 'There was an error handling this interaction.', ephemeral: true });
     }
 });
 
-// Helper function to handle interaction errors
-async function handleInteractionError(interaction) {
-    const errorMessage = 'An error occurred while processing your request.';
-    if (interaction.deferred) {
-        await interaction.editReply({ content: errorMessage, ephemeral: true });
-    } else if (interaction.replied) {
-        await interaction.followUp({ content: errorMessage, ephemeral: true });
-    } else {
-        await interaction.reply({ content: errorMessage, ephemeral: true });
-    }
-}
-
-// Helper function to handle prefix changes
-async function handlePrefixChange(interaction, newPrefix) {
-    const config = require('./config.json');
-    config.prefix = newPrefix;
-    await fs.writeFile('./config.json', JSON.stringify(config, null, 4));
-    await interaction.reply({ content: `Prefix successfully changed to: ${newPrefix}`, ephemeral: true });
-}
-
-// Import and use the welcome module
-const welcome = require('./erlc/command/events/welcome.js');
-welcome(client);
-
 client.login(process.env.TOKEN);
-
 
 
 
